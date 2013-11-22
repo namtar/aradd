@@ -82,6 +82,16 @@ int main(int argc, char** argv) {
     lenghtOfFile = fileStat.st_size;
     oldLenghtOfFile = fileStat.st_size;
 
+    if (addFile(argv[2], fileDescriptor) == -1) {
+        printf("Failure when writing to the archive");
+        close(fileDescriptor);
+    }
+
+    // update index
+    // set the file descriptor to the beginning of the index
+    lseek(fileDescriptor, 2, SEEK_SET);
+    read(fileDescriptor, indexes, sizeof (indexes));
+
     // before iterating check for another index
     //    while (indexes[15].state == Index_State.CONTINUE) {
     //        // fetch the next archive
@@ -116,22 +126,40 @@ int main(int argc, char** argv) {
 
 int addFile(char *fileName, int archiveFd) {
 
-    char *buffer[100]; // buffer to use
+    char buffer[100]; // buffer to use
 
     int fileDescriptor = open(fileName, O_RDONLY, S_IRUSR | S_IRGRP);
     if (fileDescriptor == -1) {
+        close(archiveFd);
         return EXIT_FAILURE;
     }
 
-    struct stat fStat;   
+    struct stat fStat;
     if (fstat(fileDescriptor, &fStat) == -1) {
         printf("Failure when determining the lenght of the file\n");
+        // close the file which we have written
+        close(fileDescriptor);
+        close(archiveFd);
         return EXIT_FAILURE;
     }
 
-    int numberOfBytesRead = read(fileDescriptor, buffer, sizeof (buffer));
-
     lseek(archiveFd, 0, SEEK_END); // set the archive file descriptor to the end of the file
-//    write(fileDescriptor,)
+
+    int numberOfBytesRead;
+    while (numberOfBytesRead = read(fileDescriptor, buffer, sizeof (buffer)) > 0) {
+        // write the number of bytes to the archive
+        if (write(fileDescriptor, buffer, numberOfBytesRead) == -1) {
+            printf("Error when writing a file to the archive.");
+            close(archiveFd);
+            // close the file which we have written
+            close(fileDescriptor);
+            return EXIT_FAILURE;
+        }
+
+        lenghtOfFile += numberOfBytesRead;
+    }
+
+    // close the file which we have written
+    close(fileDescriptor);
 }
 
