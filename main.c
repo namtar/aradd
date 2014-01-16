@@ -20,6 +20,32 @@ off_t lenghtOfFile; // in bytes
 int indexElementPosition = 0;
 int startPositionOfFile = 0;
 
+void listContentOfArchive(int archiveFd) {
+
+    // TODO: das funktioniert erstmal nur für ein Inhaltsverzeichnis. Index State Continue auswerten, wenn die aradd Funktionalität fertig ist.    
+    // output structs
+    int i;
+    //        for (i = 0; i < sizeof (indexes) / sizeof (Archive_Index); i++) {
+    Archive_Index indexes[16];
+    for (i = 0; i < 16; i++) {
+        Archive_Index index = indexes[i];
+        printf("Index Position: %i\n", i);
+        printf("Last access time: %s", ctime(&index.lastAccessTime));
+        printf("UID: %i\n", index.uid);
+        printf("GID: %i\n", index.gid);
+        printf("File name: %s\n", index.fileName);
+        printf("Size in bytes: %i\n", (int) index.sizeInBytes);
+        printf("Byte position in archive: %i\n\n", (int) index.bytePositionInArchive);
+        
+        if (index.state == CONTINUE) {
+            printf("was continue \n");
+            lseek(archiveFd, index.bytePositionInArchive, SEEK_SET);
+            read(archiveFd, indexes, sizeof (indexes));
+            i = 0;
+        }
+    }
+}
+
 /**
  * Adds a file to the end of the archive
  * 
@@ -56,6 +82,13 @@ int writeDirectoryOfContents(int fileDescriptor, Archive_Index indexes[]);
  * @param indexes an array of 16 Archive Index structs
  */
 void generateIndexes(Archive_Index indexes[]);
+
+/**
+ * Dirty Hack.
+ * 
+ * @param archiveFd the file descriptor
+ */
+void updateIndexFiftheenOfFirstIndex(int archiveFd);
 
 /*
  * Main function of the aradd project.
@@ -99,7 +132,6 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
     lenghtOfFile = fileStat.st_size;
-    oldLenghtOfFile = fileStat.st_size;
 
 
     // TODO: important, before appending the file check if we have index entries left.    
@@ -111,6 +143,7 @@ int main(int argc, char** argv) {
         printf("Failure when writing to the archive\n");
         close(archiveFd);
     }
+    oldLenghtOfFile = fileStat.st_size;
 
     // determine original lenght of file;
     struct stat newArchiveFileStat;
@@ -126,25 +159,29 @@ int main(int argc, char** argv) {
 
     // Write ArchiveIndex entry for added file
     Archive_Index newIndex;
-    newIndex.bytePositionInArchive = startPositionOfFile;
+    newIndex.bytePositionInArchive = oldLenghtOfFile;
     strcpy(newIndex.fileName, argv[2]);
     newIndex.fileType = PLAINFILE;
     newIndex.gid = addFileStat.st_gid;
     newIndex.state = ACTUAL;
     newIndex.uid = addFileStat.st_uid;
-    time_t now;
-    localtime(&now);
+    time_t now = time(NULL);
+    //    localtime(&now);
     newIndex.lastAccessTime = now;
     newIndex.sizeInBytes = newArchiveFileStat.st_size - oldLenghtOfFile;
 
+    printf("\nIndexElementPosition2 %i\n", indexElementPosition);
     lseek(archiveFd, indexElementPosition, SEEK_SET);
 
     int bytesWritten = write(archiveFd, &newIndex, sizeof (newIndex));
     if (bytesWritten == -1) {
         printf("There was an error writing the new Index Element for the added file\n");
         return EXIT_FAILURE;
-    }
+    }     
 
+    lseek(archiveFd, 2, SEEK_SET);
+    listContentOfArchive(archiveFd);
+    
     close(archiveFd);
 
     return (EXIT_SUCCESS);
@@ -197,6 +234,31 @@ int addFile(char *fileName, int archiveFd) {
 
     // close the file which we have written
     close(fileDescriptor);
+    return EXIT_SUCCESS;
+}
+
+/**
+ * Dirty quickfix. Update Index N15 of the first index with correct byte position in archive.
+ */
+void updateIndexFiftheenOfFirstIndex(int archiveFd) {
+
+    int pos = 2;
+    lseek(archiveFd, pos, SEEK_SET);
+    Archive_Index indexes[16];
+    read(archiveFd, indexes, sizeof (indexes));
+
+    Archive_Index index;
+    int i;
+    for (i = 0; i < 15; i++) {
+        index = indexes[i];
+        pos += sizeof (Archive_Index);
+        // this must therotically the start byte position of index nr 16.        
+    }
+    printf("BPA: %i", pos);
+    index.bytePositionInArchive = pos;
+
+    lseek(archiveFd, pos, SEEK_SET);
+    write(archiveFd, &index, sizeof (Archive_Index));
 }
 
 int doArchiveIndexMagic(int archiveFd) {
@@ -231,15 +293,64 @@ int doArchiveIndexMagic(int archiveFd) {
             // get the first free index element.
             // if there is none, created new index            
             int i;
-            for (i = 0; i < 15; i++) {
-                if (indexes[i].state == FREE) {
-                    indexElementPosition = startPositionOfIndex += (sizeof (Archive_Index) * i);
+
+            for (i = 0; i <= 15; i++) {
+                if (indexes[i].state == EOA) {
+
+                    // change old index 15
+                    lseek(archiveFd, indexes[i].bytePositionInArchive + sizeof (Archive_Index) * 15, SEEK_SET);
+                    Archive_Index oldEoaIndex = indexes[i];
+                    oldEoaIndex.state = CONTINUE;
+                    oldEoaIndex.bytePositionInArchive = lenghtOfFile; // start index of new index is end of file
+                    int bytesWritten = write(archiveFd, &oldEoaIndex, sizeof (Archive_Index));
+                    if (bytesWritten == -1) {
+                        printf("There was an error writing the Index Element\n");
+                        return EXIT_FAILURE;
+                    }
+
+                    // write new index to the end of the archive and load it.
+                    Archive_Index newIndex[16];
+                    generateIndexes(newIndex);
+                    lseek(archiveFd, 0, SEEK_END);
+
+                    struct stat fileStat;
+                    if (fstat(archiveFd, &fileStat) == -1) {
+                        printf("Failure when determining the lenght of the file\n");
+                        return EXIT_FAILURE;
+                    }
+                    lenghtOfFile = fileStat.st_size;
+                    //                    writeDirectoryOfContents(archiveFd, newIndex);
+                    write(archiveFd, newIndex, sizeof (newIndex));
+                    lseek(archiveFd, lenghtOfFile, SEEK_SET);
+                    startPositionOfIndex = lenghtOfFile;
+                    int numberOfBytesRead = read(archiveFd, indexes, sizeof (indexes)); // load new Index
+                    if (numberOfBytesRead == -1) {
+                        printf("Error when reading the archive index\n");
+                        return EXIT_FAILURE;
+                    }
+                    // get the first free index
+                    indexElementPosition = startPositionOfIndex;
+                    printf("\nIndexElementPosition %i\n", indexElementPosition);
+                    printf("Created new Index at the end of file");
+
+                    int j;
+                    for (j = 0; j < 16; j++) {
+                        printf("Debug Ausgabe:");
+                        printf("Index Position: %i\n", j);
+                        printf("Last access time: %s", ctime(&indexes[j].lastAccessTime));
+                        printf("Size in bytes: %i\n", (int) indexes[j].sizeInBytes);
+                        printf("Byte position in archive: %i\n\n", (int) indexes[j].bytePositionInArchive);
+                    }
+                    break;
+
+                } else if (indexes[i].state == FREE) {
+                    indexElementPosition = startPositionOfIndex + (sizeof (Archive_Index) * i);
                     break;
                 }
             }
             if (indexElementPosition == 0) {
                 // set filedescriptor to the end of the archive and append new index
-                int positionOfLastIndex15 = startPositionOfIndex += (sizeof (Archive_Index) * 15);
+                int positionOfLastIndex15 = startPositionOfIndex + (sizeof (Archive_Index) * 15);
                 int positionOfNewIndex;
                 // seek fd and generate new indexes
                 lseek(archiveFd, 0, SEEK_END);
@@ -254,8 +365,7 @@ int doArchiveIndexMagic(int archiveFd) {
                 Archive_Index lastIndex15 = indexes[15];
                 lastIndex15.bytePositionInArchive = positionOfNewIndex;
                 lastIndex15.state = CONTINUE;
-                time_t now;
-                localtime(&now);
+                time_t now = time(NULL);
                 lastIndex15.lastAccessTime = now;
 
                 // write old entry
@@ -269,16 +379,19 @@ int doArchiveIndexMagic(int archiveFd) {
         }
     }
 
-    int i;
-    for (i = 0; i < 16; i++) {
-        Archive_Index index = indexes[i];
-        if (index.state == FREE) {
-            // when free add file and stop loop
-            break;
-        } else if (index.state == EOA) {
-            // add new index at the end of the archive
-        }
-    }
+    //    int i;
+    //    for (i = 0; i < 16; i++) {
+    //        Archive_Index index = indexes[i];
+    //        if (index.state == FREE) {
+    // when free add file and stop loop
+    //            break;
+    //        } else if (index.state == EOA) {
+    // add new index at the end of the archive
+    //            lseek(archiveFd, 0, SEEK_END);
+    //            Archive_Index[16] newIndexes;
+    //            writeDirectoryOfContents(archiveFd, newIndexes);
+    //        }
+    //    }
 }
 
 int writeDirectoryOfContents(int fileDescriptor, Archive_Index indexes[]) {
