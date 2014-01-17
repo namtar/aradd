@@ -17,16 +17,17 @@
 
 off_t oldLenghtOfFile;
 off_t lenghtOfFile; // in bytes
-int indexElementPosition = 0;
-int startPositionOfFile = 0;
+off_t indexElementPosition = 0;
+off_t startPositionOfFile = 0;
 
 void listContentOfArchive(int archiveFd) {
 
-    // TODO: das funktioniert erstmal nur für ein Inhaltsverzeichnis. Index State Continue auswerten, wenn die aradd Funktionalität fertig ist.    
-    // output structs
     int i;
     //        for (i = 0; i < sizeof (indexes) / sizeof (Archive_Index); i++) {
+
+
     Archive_Index indexes[16];
+    read(archiveFd, indexes, sizeof (indexes));
     for (i = 0; i < 16; i++) {
         Archive_Index index = indexes[i];
         printf("Index Position: %i\n", i);
@@ -36,13 +37,13 @@ void listContentOfArchive(int archiveFd) {
         printf("File name: %s\n", index.fileName);
         printf("Size in bytes: %i\n", (int) index.sizeInBytes);
         printf("Byte position in archive: %i\n\n", (int) index.bytePositionInArchive);
-        
+
         if (index.state == CONTINUE) {
             printf("was continue \n");
             lseek(archiveFd, index.bytePositionInArchive, SEEK_SET);
             read(archiveFd, indexes, sizeof (indexes));
             i = 0;
-        }
+            }
     }
 }
 
@@ -170,18 +171,18 @@ int main(int argc, char** argv) {
     newIndex.lastAccessTime = now;
     newIndex.sizeInBytes = newArchiveFileStat.st_size - oldLenghtOfFile;
 
-    printf("\nIndexElementPosition2 %i\n", indexElementPosition);
     lseek(archiveFd, indexElementPosition, SEEK_SET);
 
     int bytesWritten = write(archiveFd, &newIndex, sizeof (newIndex));
     if (bytesWritten == -1) {
         printf("There was an error writing the new Index Element for the added file\n");
         return EXIT_FAILURE;
-    }     
+    }
 
+    // output written indexes for debugging purposes
     lseek(archiveFd, 2, SEEK_SET);
     listContentOfArchive(archiveFd);
-    
+
     close(archiveFd);
 
     return (EXIT_SUCCESS);
@@ -330,7 +331,6 @@ int doArchiveIndexMagic(int archiveFd) {
                     }
                     // get the first free index
                     indexElementPosition = startPositionOfIndex;
-                    printf("\nIndexElementPosition %i\n", indexElementPosition);
                     printf("Created new Index at the end of file");
 
                     int j;
